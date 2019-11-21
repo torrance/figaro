@@ -123,8 +123,8 @@ for ii in 1:nt - 1
         logm[jj] = radio[id[jj]]
     end
     #....these temp.arrays are needed if we need to produce replicas of the structures to fill high-z parts of the lightcone
-    x0 = x
-    y0 = y
+    x0 = copy(x)
+    y0 = copy(y)
     logm0 = logm
 
     #...sets redshift edges of each slice
@@ -154,8 +154,8 @@ for ii in 1:nt - 1
     if nbig >= 1
         println("replicating volume ", nbig, "times")
         for l in 1:nbig
-            x00 = y0
-            y00 = x0
+            x00 = copy(y0)
+            y00 = copy(x0)
             @views        append!(x, y00 .+ (l * lbox2))
             @views        append!(x, y00 .+ (l * lbox2))
 
