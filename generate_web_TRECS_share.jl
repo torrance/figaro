@@ -1,240 +1,167 @@
-using FITSIO
+using Cosmology: cosmology, luminosity_dist, angular_diameter_dist
 using DelimitedFiles: readdlm, writedlm
-using Random
+using FITSIO
+using NPZ: npzwrite
+using Unitful
+using UnitfulAstro
+using Random: Random, rand
 
-root="/Users/francovazza/Desktop/data/DATA/CHRONOS++/100Mpc/2400/snap/maps/"
+
 # Simulation parameters
-lbox = 100.   # 1D box size in Mpc
-n0 = 2400     # 1D box size in cells
-res = lbox / n0 # spatial resolution
+const lbox = 100u"Mpc"       # 1D box size in Mpc
+const n0 = 2400        # 1D box size in cells
+const res = lbox / n0  # Spatial resolution
+const nt = 15           # Maximum index of redshift slice
+const fov = 2
+const beam = 15
+const nima = convert(Int64,trunc(fov * 3600 / beam))
+const box_number = 1
 
-snaps = ["188","166","156"]   #...set of available snapshots
+ima_gal = zeros(nima, nima, nt)
+catalogue = Array{Float64, 2}[]
 
-#....observable-like parameters (all assumes concordance LCDM from Cosmology Calculator
-fov = 2.      #..field of view [degrees]
-dl =0.741*2.      #..1D size of the fov at z=0.01 [Mpc]
-adist0 = 43.  #..angular distance at z=0.01 [Mpc] distance at z=0.01
-nt = 15 #number of snapshot slices
-beam=15 #...resolution beam in arcsec
-nima = convert(Int64,trunc(fov*3600. /beam))
-ima_gal = zeros(nima + 1, nima + 1, nt)
-lbox2 = lbox
+# Set of available snapshots
+snaps = ["188","166","156"]
+
+# Set cosmology to Planck 2015 (https://arxiv.org/pdf/1502.01589.pdf)
+# TODO: verify w0, wa and Tcmw
+c = cosmology(
+    h=0.6774,
+    OmegaK=0.0008,
+    OmegaM=0.3089,
+    Neff=3.04,
+    w0=-1,
+    wa=0,
+)
+
 #...sequence of redshift snapshots as in TRECS catalog
 zz = vcat([0.01, 0.02], range(0.05, stop=1, step=0.05), range(1.2, stop=10, step=0.2))
 
-#.....file with pre-computed luminosity distances for TRECS redshfits
-filed = string(pwd(), "/distl_z.dat")
-a = readdlm(filed)
-distl = a[:,2]
-a = nothing
-
-#.....loop over snapshots
-box_number = 1   #....this parameter varies the centering of the FOV in the sky model (see below)
-
-#...there arrays will contain the 2D positions and power of the final sky model
-x0 = Array{Float64}(undef, 1)  #...x,y positions in degrees
-y0 = Array{Float64}(undef, 1)
-logm0 = Array{Float64}(undef, 1)   #.....power
-nbig0 = 0
-
-
-#...loop over nt snapshots until redshift zz[nt]
+# Loop over redshift slices until zz[nt]
 for ii in 1:nt - 1
+    # We define the range of a redshift slice to be halfway between
+    # between the last and next redshift slice value, with a special case for
+    # the first redshift slice.
+    if ii == 1
+        z_min = 0
+    else
+        z_min = (zz[ii - 1] + zz[ii]) / 2
+    end
+    z_max = (zz[ii] + zz[ii+1]) / 2
+    z_mean = (z_min + z_max) / 2
 
-    ncloud = 1  #...ncloud sets whether we need to distribute the info of one pixel in the input sky model into ncloud^2 smaller pixels, as a function of the final resolution
-    #....the following choices for ncloud are referred to a 15" resolution and were just hardcoded
-    if zz[ii] == 0.01   #....referred to a 15" resolution observation
+    println("Calculating flux contribution from redshift slice ", z_mean)
+
+    # Calculate cosmology for this redshift
+    ldist = luminosity_dist(c, z_mean)
+    transverse_dist = deg2rad(fov) * angular_diameter_dist(c, z_mean)
+
+    if transverse_dist > lbox
+        println("Box is too large for field of view. Skipping...")
+        continue
+    end
+
+    # ncloud determines the 'oversampling' of each pixel to avoid pixellation effects at a 15'' resolution
+    if zz[ii] == 0.01
         ncloud = 18
-    end
-    if zz[ii] == 0.02
+    elseif zz[ii] == 0.02
         ncloud = 12
-    end
-    if zz[ii] == 0.05
+    elseif zz[ii] == 0.05
         ncloud = 6
-    end
-    if zz[ii] == 0.1
+    elseif zz[ii] == 0.1
         ncloud = 2
+    else
+        ncloud = 1  # Default case
     end
-    #...for larger redshift the input pixel size is < than the beam size
 
-    #...output file with information on pixels for the MWA map making
-    file_gal = string(pwd(), "/cone_1x1_z", zz[ii], "txt_web", box_number, ".dat")
-    so2 = open(file_gal, "w")
-
-
-#...in principle, here we choose which snapshots slice and projection along the LOS to use in order to minimize repeating structures. In this case however just one LOS and redshift, as example
-
-    if zz[ii] >= 0 && zz[ii] <= 0.1
+    # In principle, here we choose which snapshots slice and projection along the LOS to use in order
+    # to minimize repeating structures. In this case however just one LOS and redshift, as example.
+    if 0 <= zz[ii] <= 0.1
         los = "Y"
         filefits = string(pwd(), "/map_allD_", snaps[1], "_1024_", los, "newHB2.fits")
-        pthr = 1e23   #lower limit on pixels to use (i.e. pixels with Flux<pthr are not used) in [erg/s/Hz]
-    end
-
-    if zz[ii] > 0.1 && zz[ii] <= 0.2
+        pthr = 1e23   # Lower limit on pixels to use (i.e. pixels with Flux<pthr are not used) in [erg/s/Hz]
+    elseif 0.1 < zz[ii] <= 0.2
         los = "Y"
         filefits = string(pwd(), "/map_allD_", snaps[1], "_1024_", los, "newHB2.fits")
         pthr = 1e23
-    end
-
-    if zz[ii] > 0.2
+    else
         los = "Y"
         filefits = string(pwd(), "/map_allD_", snaps[1], "_1024_", los, "newHB2.fits")
         pthr = 1e24
     end
 
-
-#......here we read from the appropriate sky model with the cosmic web emission
-
+    # Read in from the appropriate sky model with the cosmic web emission
     imaf = FITS(filefits, "r")
     ima = read(imaf[1])
+    radio = ima[:, :, 9]  # Radio emission in axis 9 [erg/s/Hz]
+    mach = ima[:, :, 5]   # Weighted distribution of Mach number in axis 5
     close(imaf)
-
-    iradio = 9  #...plane in the FITS file which contains the radio emission
-    ispec = 5   #...weighted distribution of Mach number -> spectral indices
-    radio = ima[:,:,iradio]
-    mach = ima[:,:,ispec]
     ima = nothing
-    ν_in = 1400.    #input frequency in the sky model [MHz]
-    ν_out = 155.     #desired output frequency  [MHz]
 
-    for i in eachindex(mach)  #...loops over cells with a potential signal
-    #..cures for too small or too large Mach numbers
-        if mach[i] <= 2.0
-            mach[i] = 2.0
+    # Set limits for too small or too large Mach numbers
+    mach[mach .< 2] .= 2
+    mach[mach .> 10] .= 10
+
+    # Adjust flux of radio output from 1400 MHz down to 154 MHz
+    ν_in = 1400    # Input frequency in the sky model [MHz]
+    ν_out = 154    # Desired output frequency  [MHz]
+    α = @. 0.5 * (mach^2 + 1 ) / (mach^2 - 1)
+    radio = @. radio * (ν_in / ν_out)^α
+
+    # Restrict only to sources above threshold pthr
+    # We also calculate the position as the resolution element * the cell coordinates
+    idx = findall(radio .> pthr)    #  Find index of all pixels brighter than p_thr [erg/s/Hz]
+    xs = map(x -> (x[1] - 1) * res, idx)
+    ys = map(x -> (x[2] - 1) * res, idx)
+    lum = radio[idx]
+
+    # Convert luminosity to flux in Jy
+    @views lum /= 1E7                         # [erg/s/Hz] -> [Watts/Hz]
+    fluxes = lum / (4 * π * (ldist / u"m")^2) # [Watts / m^2 / Hz]
+    @views fluxes *= 1E26                     # [Watts / m^2 / Hz] -> [Jy]
+
+    # Randomly offset the flattened radio volume (wrap around)
+    Random.seed!(ii) # Seeding with ii produces reproducible offsets
+    shift1 = lbox * rand(2)
+    xs = (xs .+ lbox * rand()) .% lbox
+    ys = (ys .+ lbox * rand()) .% lbox
+
+    for i in eachindex(fluxes)
+        if xs[i] > transverse_dist || ys[i] > transverse_dist
+            continue
         end
-        if mach[i] >= 10.
-            mach[i] = 10.
-        end
 
-        @fastmath  α = 0.5 * (mach[i]^2 + 1) / (mach[i]^2 - 1) + 0.5   #...radio spectral index
-        @fastmath  radio[i] = (radio[i] * ((ν_in / ν_out)^(α))) #....correcting the sky model for
+        # For low redshifts, we oversample cells to avoid pixellation effects
+        flux = fluxes[i] / ncloud^2
+        for ll in 1:ncloud
+            for jj in 1:ncloud
+                x = (xs[i] + ll * (res / ncloud)) / transverse_dist
+                y = (ys[i] + jj * (res / ncloud)) / transverse_dist
 
-    end
-
-    id = findall(radio .> pthr)    #find index of all pixels brighter than p_thr [erg/s/Hz]
-
-    ng = size(id)
-    x = Array{Float64}(undef, ng[1])
-    y = Array{Float64}(undef, ng[1])
-    logm = Array{Float64}(undef, ng[1])
-
-    for jj in eachindex(id)
-        ij = CartesianIndices((n0, n0))[id[jj]]
-        # ij = ind2sub((n0, n0), id[jj])   #...this converts id index into x,y information
-        x[jj] = ij[1] * res
-        y[jj] = ij[2] * res
-        logm[jj] = radio[id[jj]]
-    end
-    #....these temp.arrays are needed if we need to produce replicas of the structures to fill high-z parts of the lightcone
-    x0 = copy(x)
-    y0 = copy(y)
-    logm0 = logm
-
-    #...sets redshift edges of each slice
-    zz_pre = zz[ii]
-    if ii == 1
-        zz_pre = 0.
-    end
-    zz_post = zz[ii + 1]
-    zz_mean = (zz_post + zz_pre) * 0.5
-    dzz = zz_post - zz_pre
-    zeds = zz_mean
-
-    println("doing tile with mean redshift z=", zeds)
-    ldist = distl[ii]      #...luminosity distance
-    adist = ldist / (1 + zz[ii]^2)   #..angular size distance
-
-    dla = dl * (adist / (adist0))      #...proportion between the side in Mpc in the FOV at z=0.01 and in all subsequent redshifts
-
-    Random.seed!(ii)   #....important to use same random generation here as in the (otherwise indipendent) generation of radiogalaxies
-    r_number=rand(1)
-
-#    shift1 = convert(Int64,trunc(100. *r_number[1]))                     #...arbitrary displacement to point our FOV in different positions as a function of box_number
-    shift1=100. *rand(1,2)
-    #shift2 = convert(Int64,trunc(40. *rand(1)))                     #....units of Mpc
-    x1 = 1 + shift1[1,1] * box_number   #convert(Int64,trunc(1 + shift1 * box_number))        #...some fuzzy way of randomly changing the sky model edges along the sequence (all meant to avoid the overlap of the same structures along the LOS)
-    x2 = x1 + dla
-    y1 = 1 + shift1[1,2] * box_number #convert(Int64,trunc(1 + shift1 * box_number))
-    y2 = y1 + dla
-
-#....computing whether a replica of the galaxy distribution (assuming periodicity) is needed
-    if x2>=y2
-    nbig = convert(Int32, trunc(x2 / (lbox2 + 0.1)))   #...if x2>lbox, our input sky model is not large enough, and we need to replicate it nbig times
-    end
-    if x2<y2
-    nbig = convert(Int32, trunc(y2 / (lbox2 + 0.1)))   #...if y2>lbox, our input sky model is not large enough, and we need to replicate it nbig times
-    end
-
-    if nbig >= 1
-        println("replicating volume ", nbig, "times")
-        for l in 1:nbig
-            x00 = y0
-            y00 = x0
-            @views        append!(x, y00 .+ (l * lbox2))
-            @views        append!(x, y00 .+ (l * lbox2))
-
-        #....swapping of x and y wrt to the previous (ii-1) step, to minimize repeating patterns
-        #....the following sequence is tasselate the entire 2D extension of the FOV
-            append!(x, y00)
-            append!(y, x00 .+ (l * lbox2))
-            append!(y, x00)
-            append!(y, x00 .+ (l * lbox2))
-
-            append!(logm, logm0)
-            append!(logm, logm0)
-            append!(logm, logm0)
-        end
-        nbig0 = nbig
-    end
-
-    ngg = size(x)
-
-    for i in 1:ngg[1]   #....loop over the (augmeted by replication, or not) distribution of pixels
-
-        if x[i] >= x1 && x[i] <= x2 && y[i] >= y1 && y[i] <= y2
-            pflux = logm[i] / (ncloud^2.)  #...weights the pixel contribution for the number of ncloud^2 resampling that were ncessary
-            for ll in 1:ncloud
-                for jj in 1:ncloud
-        #...we fill the area in a square-like tasselation + random displacement
-                    @fastmath          xi = x[i] - res * 0.5 + ll * res / ncloud + 0.75 * res * rand()
-                    @fastmath          yi = y[i] - res * 0.5 + jj * res / ncloud + 0.75 * res * rand()
-
-                    xo = (xi - x1) / (x2 - x1)
-                    yo = (yi - y1) / (y2 - y1)
-                    xu = convert(Int64, trunc((nima * xo)))
-                    yu = convert(Int64, trunc((nima * yo)))
-
-                    xs = convert(Float32, fov * (xo - 0.5))
-                    ys = convert(Float32, fov * (yo - 0.5))
-                    logmo = convert(Float32, pflux)
-                    writedlm(so2, [logmo zz[ii] xs ys])  #...write on disk all (galaxy-like) data for this redshift slice
-
-
-        #....additional map making as sanity check
-                    if xu > nima
-                        xu = nima
-                    end
-                    if yu > nima
-                        yu = nima
-                    end
-                    if xu <= 1
-                        xu = 1
-                    end
-                    if yu <= 1
-                        yu = 1
-                    end
-
-                    ima_gal[xu,yu,ii] += ((pflux) / (4 * pi * ldist^2 * 1e23 * 35.1^2)) #generate a map in ...Jy/arcsec^2)
-
+                # Recheck that we're still inside the FOV - the cloud may have pushed us out
+                if x > 1 || y > 1
+                    continue
                 end
+
+                push!(catalogue, [deg2rad(x) deg2rad(y) 154E6 flux -1 z_mean])  # [RA, Dec, reference freq, flux, spectral index, redshift]
+
+                xu = floor(Int, x * nima + 1)
+                yu = floor(Int, y * nima + 1)
+                ima_gal[xu, yu, ii] += flux
             end
         end
     end
 
-
-    close(so2)
+    ima_gal[:, :, nt] += ima_gal[:, :, ii]
+    println("Total flux in redshift slice: ", sum(@view ima_gal[:, :, ii]))
 end
 
+# Write catalogue out to numpy file
+catalogue = vcat(catalogue...)
+@views catalogue[:, 2] .-= deg2rad(27)  # Centre on EoR0 field at (0, -27)
+npzwrite(string("web-", box_number, ".npy"), catalogue)
+
+# Write temporary fits file for quick sanity check
 filep4 = string(pwd(), "/map_web", box_number, ".fits")
 f = FITS(filep4, "w");
 write(f, ima_gal)
