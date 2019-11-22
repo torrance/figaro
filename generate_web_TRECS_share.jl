@@ -1,6 +1,8 @@
 using FITSIO
 using DelimitedFiles: readdlm, writedlm
+using Random
 
+root="/Users/francovazza/Desktop/data/DATA/CHRONOS++/100Mpc/2400/snap/maps/"
 # Simulation parameters
 lbox = 100.   # 1D box size in Mpc
 n0 = 2400     # 1D box size in cells
@@ -9,11 +11,12 @@ res = lbox / n0 # spatial resolution
 snaps = ["188","166","156"]   #...set of available snapshots
 
 #....observable-like parameters (all assumes concordance LCDM from Cosmology Calculator
-fov = 1.      #..field of view [degrees]
-dl = 14.      #..1D size of the fov at z=0.01 [Mpc]
-adist0 = 50.  #..angular distance at z=0.01 [Mpc] distance at z=0.01
-nt = 8 #number of snapshot slices
-nima = 2400
+fov = 2.      #..field of view [degrees]
+dl =0.741*2.      #..1D size of the fov at z=0.01 [Mpc]
+adist0 = 43.  #..angular distance at z=0.01 [Mpc] distance at z=0.01
+nt = 15 #number of snapshot slices
+beam=15 #...resolution beam in arcsec
+nima = convert(Int64,trunc(fov*3600. /beam))
 ima_gal = zeros(nima + 1, nima + 1, nt)
 lbox2 = lbox
 #...sequence of redshift snapshots as in TRECS catalog
@@ -142,20 +145,31 @@ for ii in 1:nt - 1
     adist = ldist / (1 + zz[ii]^2)   #..angular size distance
 
     dla = dl * (adist / (adist0))      #...proportion between the side in Mpc in the FOV at z=0.01 and in all subsequent redshifts
-    shift = 20                     #...arbitrary displacement to point our FOV in different positions as a function of box_number
 
-    x1 = 1 + shift * box_number        #...some fuzzy way of randomly changing the sky model edges along the sequence (all meant to avoid the overlap of the same structures along the LOS)
+    Random.seed!(ii)   #....important to use same random generation here as in the (otherwise indipendent) generation of radiogalaxies
+    r_number=rand(1)
+
+#    shift1 = convert(Int64,trunc(100. *r_number[1]))                     #...arbitrary displacement to point our FOV in different positions as a function of box_number
+    shift1=100. *rand(1,2)
+    #shift2 = convert(Int64,trunc(40. *rand(1)))                     #....units of Mpc
+    x1 = 1 + shift1[1,1] * box_number   #convert(Int64,trunc(1 + shift1 * box_number))        #...some fuzzy way of randomly changing the sky model edges along the sequence (all meant to avoid the overlap of the same structures along the LOS)
     x2 = x1 + dla
-    y1 = 90 - shift * box_number
+    y1 = 1 + shift1[1,2] * box_number #convert(Int64,trunc(1 + shift1 * box_number))
     y2 = y1 + dla
 
 #....computing whether a replica of the galaxy distribution (assuming periodicity) is needed
+    if x2>=y2
     nbig = convert(Int32, trunc(x2 / (lbox2 + 0.1)))   #...if x2>lbox, our input sky model is not large enough, and we need to replicate it nbig times
+    end
+    if x2<y2
+    nbig = convert(Int32, trunc(y2 / (lbox2 + 0.1)))   #...if y2>lbox, our input sky model is not large enough, and we need to replicate it nbig times
+    end
+
     if nbig >= 1
         println("replicating volume ", nbig, "times")
         for l in 1:nbig
-            x00 = copy(y0)
-            y00 = copy(x0)
+            x00 = y0
+            y00 = x0
             @views        append!(x, y00 .+ (l * lbox2))
             @views        append!(x, y00 .+ (l * lbox2))
 
